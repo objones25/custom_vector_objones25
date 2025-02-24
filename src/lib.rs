@@ -46,7 +46,14 @@ impl<T> Vec<T> {
     }
 
     pub fn push(&mut self, item: T) {
-        self.insert(self.len, item);
+        if self.len == self.capacity() {
+            // When at capacity, grow by 50% or at least 1
+            let additional = std::cmp::max(1, self.capacity() / 2);
+            self.reserve(additional);
+        }
+        self.buf.write_at(self.len, item);
+        self.len = self.len.checked_add(1)
+            .expect("push: length overflow");
     }
 
     pub fn pop(&mut self) -> Option<T> {
@@ -66,10 +73,10 @@ impl<T> Vec<T> {
             );
         }
 
-        if self.capacity() == 0 {
-            self.reserve(1);
-        } else if self.len == self.capacity() {
-            self.reserve(self.capacity());
+        // When at capacity, grow by 50% or at least 1
+        if self.len == self.capacity() {
+            let additional = std::cmp::max(1, self.capacity() / 2);
+            self.reserve(additional);
         }
 
         self.buf.shift_right(index, self.len - index, 1);
@@ -94,14 +101,25 @@ impl<T> Vec<T> {
         }
     }
 
-    pub fn clear(&mut self) {
-        while let Some(_) = self.pop() {}
+    pub fn shrink_to_fit(&mut self) {
+        self.buf.shrink_to_fit(self.len);
     }
-    
+
     pub fn truncate(&mut self, len: usize) {
+        // Remove elements from the end until we reach the desired length
         while self.len > len {
             self.pop();
         }
+        
+        // Only shrink if we've truncated significantly (more than 75% reduction)
+        if self.len < self.capacity() / 4 {
+            self.shrink_to_fit();
+        }
+    }
+
+    pub fn clear(&mut self) {
+        // Pop all elements but don't shrink capacity
+        while let Some(_) = self.pop() {}
     }
 
     pub fn iter(&self) -> iter::Iter<'_, T> {
@@ -357,5 +375,92 @@ mod tests {
     fn test_debug_format() {
         let vec = vec![1, 2, 3];
         assert_eq!(format!("{:?}", vec), "[1, 2, 3]");
+    }
+
+    #[test]
+    fn test_shrink_to_fit() {
+        let mut vec = Vec::with_capacity(100);
+        assert!(vec.capacity() >= 100);
+
+        // Add some elements
+        for i in 0..20 {
+            vec.push(i);
+        }
+
+        // Shrink - should reduce capacity since we're using <25% of space
+        vec.shrink_to_fit();
+        assert!(vec.capacity() < 100);
+        assert!(vec.capacity() >= 20);
+
+        // Verify elements are preserved
+        for (i, &item) in vec.iter().enumerate() {
+            assert_eq!(item, i);
+        }
+    }
+
+    #[test]
+    fn test_growth_pattern() {
+        let mut vec = Vec::new();
+        let mut last_cap = 0;
+
+        // Add elements and check growth pattern
+        for i in 0..1000 {
+            vec.push(i);
+            let current_cap = vec.capacity();
+            
+            if last_cap > 0 && current_cap > last_cap {
+                // Check growth ratio is reasonable
+                let ratio = current_cap as f64 / last_cap as f64;
+                assert!(ratio <= 2.0, "Growth ratio too aggressive: {}", ratio);
+                assert!(ratio >= 1.2, "Growth ratio too conservative: {}", ratio);
+            }
+            
+            last_cap = current_cap;
+        }
+    }
+
+    #[test]
+    fn test_truncate_with_shrink() {
+        let mut vec = Vec::new();
+        
+        // Fill vector
+        for i in 0..1000 {
+            vec.push(i);
+        }
+        let original_cap = vec.capacity();
+
+        // Truncate to small size
+        vec.truncate(10);
+        
+        // Capacity should have been reduced
+        assert!(vec.capacity() < original_cap);
+        assert_eq!(vec.len(), 10);
+        
+        // Verify remaining elements
+        for (i, &item) in vec.iter().enumerate() {
+            assert_eq!(item, i);
+        }
+    }
+
+    #[test]
+    fn test_clear_and_reuse() {
+        let mut vec = Vec::new();
+        
+        // First use
+        for i in 0..100 {
+            vec.push(i);
+        }
+        let cap_after_first_use = vec.capacity();
+        
+        // Clear and verify
+        vec.clear();
+        assert_eq!(vec.len(), 0);
+        assert_eq!(vec.capacity(), cap_after_first_use);
+        
+        // Reuse and verify capacity is reused
+        for i in 0..50 {
+            vec.push(i);
+        }
+        assert_eq!(vec.capacity(), cap_after_first_use);
     }
 }
